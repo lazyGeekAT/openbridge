@@ -289,8 +289,10 @@ async def draft_workflow_from_instruction(
         f"\nUser request:\n{instruction}{existing_text}"
     )
 
-    authoring_chat_id = -2_000_000_000 - abs(chat_id)
+    authoring_chat_id = -(10**18 + abs(chat_id))
     draft_text = await bridge.run_prompt(authoring_chat_id, authoring_prompt)
+    async with bridge._session_lock:
+        bridge._chat_sessions.pop(authoring_chat_id, None)
     if bridge._is_error_result(draft_text):
         raise ValueError(draft_text)
 
