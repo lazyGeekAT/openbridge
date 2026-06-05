@@ -555,36 +555,46 @@ class OpenCodeBridge:
     async def run_prompt(self, chat_id: int, prompt: str) -> str:
         self._stats["requests"] += 1
         self._stats["last_request_at"] = time.time()
-        try:
-            session_id = await self._get_or_create_session(chat_id)
-        except Exception as exc:
-            self._stats["failed_requests"] += 1
-            self._stats["last_error"] = str(exc)
-            self._stats["last_result_kind"] = "session-error"
-            logger.exception("OpenCode session creation failed for chat %s", chat_id)
-            return "OpenCode API session error. Check logs for details."
 
-        try:
-            result = await asyncio.to_thread(self._run_prompt_via_api_sync, session_id, prompt)
-        except Exception as exc:
-            self._stats["failed_requests"] += 1
-            self._stats["last_error"] = str(exc)
-            self._stats["last_result_kind"] = "api-error"
-            logger.exception("OpenCode API request failed for chat %s", chat_id)
-            return "OpenCode API request failed. Check logs for details."
+        for attempt in range(2):
+            try:
+                session_id = await self._get_or_create_session(chat_id)
+            except Exception as exc:
+                self._stats["failed_requests"] += 1
+                self._stats["last_error"] = str(exc)
+                self._stats["last_result_kind"] = "session-error"
+                logger.exception("OpenCode session creation failed for chat %s", chat_id)
+                return "OpenCode API session error. Check logs for details."
 
-        self._stats["last_model"] = self.config.opencode_model or "default"
-        if self._is_error_result(result):
-            self._stats["failed_requests"] += 1
-            self._stats["last_error"] = result
-            self._stats["last_result_kind"] = "error"
-        else:
-            self._stats["successful_requests"] += 1
-            self._stats["last_success_at"] = time.time()
-            self._stats["last_error"] = None
-            self._stats["last_result_kind"] = "success"
+            try:
+                result = await asyncio.to_thread(self._run_prompt_via_api_sync, session_id, prompt)
+            except Exception as exc:
+                error_text = str(exc)
+                if attempt == 0 and self._is_stale_session_error(error_text):
+                    logger.warning("Stale session detected for chat %s, clearing and retrying", chat_id)
+                    async with self._session_lock:
+                        self._chat_sessions.pop(chat_id, None)
+                    continue
+                self._stats["failed_requests"] += 1
+                self._stats["last_error"] = error_text
+                self._stats["last_result_kind"] = "api-error"
+                logger.exception("OpenCode API request failed for chat %s", chat_id)
+                return "OpenCode API request failed. Check logs for details."
 
-        return result
+            self._stats["last_model"] = self.config.opencode_model or "default"
+            if self._is_error_result(result):
+                self._stats["failed_requests"] += 1
+                self._stats["last_error"] = result
+                self._stats["last_result_kind"] = "error"
+            else:
+                self._stats["successful_requests"] += 1
+                self._stats["last_success_at"] = time.time()
+                self._stats["last_error"] = None
+                self._stats["last_result_kind"] = "success"
+
+            return result
+
+        return "OpenCode API request failed. Check logs for details."
 
     async def _get_or_create_session(self, chat_id: int) -> str:
         existing = self._chat_sessions.get(chat_id)
@@ -751,6 +761,10 @@ class OpenCodeBridge:
 
     def _enhance_prompt_sync(self, runtime: dict, raw_prompt: str) -> Optional[str]:
         return self._llm_service._enhance_prompt_sync(runtime, raw_prompt)
+
+    @staticmethod
+    def _is_stale_session_error(error_text: str) -> bool:
+        return "404" in error_text or "session not found" in error_text.lower() or "session_id" in error_text.lower()
 
     def _is_error_result(self, text: str) -> bool:
         error_prefixes = (
