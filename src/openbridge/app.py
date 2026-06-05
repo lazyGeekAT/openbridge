@@ -366,8 +366,12 @@ def _daemonize(log_file: Path) -> Optional[int]:
 
     os.setsid()
 
+    pid2 = os.fork()
+    if pid2 > 0:
+        os._exit(0)
+
     os.chdir("/")
-    os.umask(0)
+    os.umask(0o077)
 
     with open(os.devnull, "rb", buffering=0) as devnull:
         os.dup2(devnull.fileno(), sys.stdin.fileno())
@@ -382,7 +386,10 @@ def _daemonize(log_file: Path) -> Optional[int]:
 
 def _write_pid() -> None:
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    tmp = PID_FILE.with_suffix(".pid.tmp")
+    tmp.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.rename(PID_FILE)
 
 
 def _remove_pid() -> None:
