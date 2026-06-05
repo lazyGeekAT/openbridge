@@ -71,6 +71,8 @@ DEFAULT_WORKFLOW_PROMPT_MAX_CHARS = 12000
 DEFAULT_WORKFLOW_PROMPT_OVERFLOW_MODE = "reject"
 DEFAULT_OPENCODE_BACKOFF_BASE_MS = 250
 DEFAULT_OPENCODE_BACKOFF_MAX_MS = 5000
+SESSION_EXPIRY_SECONDS = 3600
+DEFAULT_MAX_PROMPT_LENGTH = 10000
 DEFAULT_OPENCODE_BACKOFF_FACTOR = 2.0
 DEFAULT_OPENCODE_BACKOFF_JITTER_PCT = 0.2
 LEGACY_ENV_PREFIX = "TELEWATCH_"
@@ -505,6 +507,7 @@ class OpenCodeBridge:
             "last_result_kind": None,
         }
         self._chat_sessions: dict[int, str] = {}
+        self._session_last_used: dict[int, float] = {}
         self._session_lock = asyncio.Lock()
         self._workflow_stats_provider: Optional[Callable[[], List[str]]] = None
         self._workflow_manager: Any = None
@@ -591,6 +594,7 @@ class OpenCodeBridge:
                 self._stats["last_success_at"] = time.time()
                 self._stats["last_error"] = None
                 self._stats["last_result_kind"] = "success"
+                self._session_last_used[chat_id] = time.monotonic()
 
             return result
 
@@ -599,15 +603,25 @@ class OpenCodeBridge:
     async def _get_or_create_session(self, chat_id: int) -> str:
         existing = self._chat_sessions.get(chat_id)
         if existing:
-            return existing
+            last_used = self._session_last_used.get(chat_id, 0.0)
+            if time.monotonic() - last_used > SESSION_EXPIRY_SECONDS:
+                async with self._session_lock:
+                    if self._chat_sessions.get(chat_id) is existing:
+                        del self._chat_sessions[chat_id]
+                        self._session_last_used.pop(chat_id, None)
+            else:
+                self._session_last_used[chat_id] = time.monotonic()
+                return existing
 
         async with self._session_lock:
             existing = self._chat_sessions.get(chat_id)
             if existing:
+                self._session_last_used[chat_id] = time.monotonic()
                 return existing
 
             session_id = await asyncio.to_thread(self._create_session_sync)
             self._chat_sessions[chat_id] = session_id
+            self._session_last_used[chat_id] = time.monotonic()
             return session_id
 
     def _create_session_sync(self) -> str:
@@ -987,6 +1001,16 @@ class OpenCodeBridge:
                     await update.effective_message.reply_text("Please send a non-empty prompt.")
                 except Exception as reply_exc:
                     logger.error("Failed to send empty prompt warning to chat %s: %s", chat_id, reply_exc)
+                return
+
+            if len(prompt) > DEFAULT_MAX_PROMPT_LENGTH:
+                logger.warning("Prompt too long for chat %s: %d chars (max %d)", chat_id, len(prompt), DEFAULT_MAX_PROMPT_LENGTH)
+                try:
+                    await update.effective_message.reply_text(
+                        f"Prompt is too long ({len(prompt)} chars). Maximum is {DEFAULT_MAX_PROMPT_LENGTH}."
+                    )
+                except Exception as reply_exc:
+                    logger.error("Failed to send prompt length warning to chat %s: %s", chat_id, reply_exc)
                 return
 
             logger.info(
