@@ -237,8 +237,10 @@ def write_env_file(path: Path, data: Dict[str, str]) -> None:
         value = data.get(key, "")
         if value:
             lines.append(f"export {key}={_format_env_value(value)}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.chmod(path, 0o600)
+    tmp = path.with_suffix(".env.tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.rename(path)
 
 
 def _write_opencode_env_file(path: Path, data: Dict[str, str]) -> None:
@@ -249,8 +251,10 @@ def _write_opencode_env_file(path: Path, data: Dict[str, str]) -> None:
         value = data.get(key, "")
         if value:
             lines.append(f"export {key}={_format_env_value(value)}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.chmod(path, 0o600)
+    tmp = path.with_suffix(".env.tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.rename(path)
 
 
 def _sync_opencode_env_from_bridge_config(config_path: Path = CONFIG_FILE) -> None:

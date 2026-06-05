@@ -680,6 +680,8 @@ class OpenCodeBridge:
                 detail = exc.read().decode("utf-8", errors="replace")
             except (UnicodeDecodeError, IOError):
                 detail = str(exc)
+            if len(detail) > 500:
+                detail = detail[:500] + "..."
             raise RuntimeError(f"OpenCode API HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(f"OpenCode API request error: {exc}") from exc

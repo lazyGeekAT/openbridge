@@ -39,6 +39,12 @@ _BLOCKED_FETCH_NETWORKS = (
     ipaddress.ip_network("fe80::/10"),
 )
 
+_BLOCKED_FETCH_HEADERS = frozenset({
+    "host", "authorization", "cookie", "set-cookie",
+    "content-length", "transfer-encoding", "connection",
+    "proxy-authorization", "proxy-authenticate", "upgrade",
+})
+
 
 @dataclass
 class WorkflowStep:
@@ -197,9 +203,11 @@ class WorkflowStateStore:
                 workflow_id: state.to_mapping() for workflow_id, state in sorted(self._state.items())
             }
         }
-        self.state_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp = self.state_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        tmp.rename(self.state_file)
         os.chmod(self.state_file.parent, 0o700)
-        os.chmod(self.state_file, 0o600)
 
     def get(self, workflow_id: str) -> WorkflowState:
         if workflow_id not in self._state:
@@ -476,9 +484,11 @@ def sample_workflows() -> Dict[str, Any]:
 
 def save_workflows(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.rename(path)
     os.chmod(path.parent, 0o700)
-    os.chmod(path, 0o600)
 
 
 class WorkflowManager:
@@ -923,7 +933,14 @@ def _chunk_text(text: str, limit: int = 3900) -> Iterable[str]:
 
 
 def _fetch_url_sync(url: str, timeout_seconds: int, headers: Mapping[str, Any]) -> tuple[str, str]:
-    request = Request(url, headers={str(key): str(value) for key, value in headers.items()})
+    if not _is_safe_fetch_url(url):
+        raise ValueError(f"Unsafe fetch URL blocked at fetch time: {url}")
+    safe_headers = {
+        str(key): str(value)
+        for key, value in headers.items()
+        if str(key).lower().strip() not in _BLOCKED_FETCH_HEADERS
+    }
+    request = Request(url, headers=safe_headers)
     with urlopen(request, timeout=timeout_seconds) as response:
         raw_bytes = response.read()
         charset = response.headers.get_content_charset() or "utf-8"
