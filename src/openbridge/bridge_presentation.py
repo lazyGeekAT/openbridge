@@ -22,6 +22,23 @@ MDV2_ENTITY_PATTERN = re.compile(
 )
 MDV2_MAX_FALLBACK_DEPTH = 4
 MDV2_STRICT_FALLBACK_THRESHOLD = 400
+TRUNCATION_NOTICE = "\n\n_...response truncated (OpenCode reached length limit)_"
+SENTENCE_ENDS = {".", "!", "?", ")", '"', "*", ">", "]", "}", ":"}
+TRUNCATION_END_CHARS = set(".,!?)\"*'>]:}")
+
+
+def _is_likely_truncated(text: str) -> bool:
+    stripped = text.rstrip()
+    if not stripped:
+        return False
+    last_char = stripped[-1]
+    if last_char in SENTENCE_ENDS:
+        if last_char == "*":
+            return stripped.count("*") % 2 != 0
+        return False
+    return True
+
+
 SENSITIVE_LOG_PATTERNS = (
     re.compile(r"(https?://api\.telegram\.org/bot)(\d{6,12}:[A-Za-z0-9_-]+)(/)", re.IGNORECASE),
     re.compile(r"\b(\d{6,12}:[A-Za-z0-9_-]{20,})\b"),
@@ -341,9 +358,15 @@ async def send_result_messages(
                         logger.error("Fallback message send also failed for chat %s: %s", chat_id, fallback_exc)
             return
 
-        for chunk in _chunk_message(result):
+        chunks = list(_chunk_message(result))
+        for idx, chunk in enumerate(chunks):
             if len(chunk) > TELEGRAM_LIMIT:
                 chunk = chunk[:TELEGRAM_LIMIT]
+            is_last = idx == len(chunks) - 1
+            if is_last and _is_likely_truncated(chunk):
+                remaining = TELEGRAM_LIMIT - _utf16_len(chunk) - _utf16_len(TRUNCATION_NOTICE)
+                if remaining > 0:
+                    chunk = chunk + TRUNCATION_NOTICE
             try:
                 escaped_chunk = _escape_markdown_v2(chunk, preserve_formatting=True)
                 await app.bot.send_message(
