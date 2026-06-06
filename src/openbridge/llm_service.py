@@ -97,15 +97,32 @@ class LLMService:
 
         return self._render_decorated_messages(payload)
 
+    @staticmethod
+    def _truncate_at_boundary(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        truncated = text[:limit]
+        last_para = truncated.rfind("\n\n")
+        if last_para > limit // 2:
+            return text[:last_para]
+        last_sentence = truncated.rfind(". ")
+        if last_sentence > limit // 2:
+            return text[: last_sentence + 1]
+        last_space = truncated.rfind(" ", limit // 2, limit)
+        if last_space > limit // 2:
+            return text[:last_space]
+        return truncated
+
     def _decorate_output_sync(self, raw_output: str, runtime: dict) -> Optional[dict]:
         """Synchronously decorate output using LLM."""
+        truncated = self._truncate_at_boundary(raw_output, 12000)
         prompt = (
             "Transform the following OpenCode result into a concise Telegram-friendly JSON object. "
             "Return JSON only, with exactly these keys: title, summary, highlights, actions, warnings. "
             "Use short, practical wording. Keep the summary under 600 characters. "
             "highlights, actions, and warnings must be arrays of strings. "
             "Do not wrap the JSON in markdown fences.\n\n"
-            f"OpenCode output:\n{raw_output[:12000]}"
+            f"OpenCode output:\n{truncated}"
         )
 
         payload = {

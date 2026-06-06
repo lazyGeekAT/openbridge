@@ -65,6 +65,13 @@ class OpenCodeAPIClient:
         poll_count = 0
         attempt = 0
 
+        # Track candidate stability across consecutive polls to avoid
+        # returning a partial streaming response that the OpenCode API is
+        # still updating in-place.
+        stable_candidate = None
+        stable_count = 0
+        STABLE_THRESHOLD = 2
+
         while time.time() < deadline:
             # compute adaptive backoff with optional jitter
             sleep_ms = self.backoff_base_ms * (self.backoff_factor ** attempt)
@@ -83,15 +90,28 @@ class OpenCodeAPIClient:
 
             current = self.fetch_session_messages(session_id)
             candidates = self._extract_text_candidates(current)
+            latest_new = None
             for candidate in reversed(candidates):
                 if (
                     candidate not in before_snapshot
                     and candidate.strip()
                     and candidate.strip() != prompt.strip()
                 ):
+                    latest_new = candidate
+                    break
+
+            if latest_new is None:
+                stable_candidate = None
+                stable_count = 0
+            elif latest_new == stable_candidate:
+                stable_count += 1
+                if stable_count >= STABLE_THRESHOLD:
                     elapsed = time.time() - started_at
-                    logger.debug("OpenCode response received in %.2fs after %d polls", elapsed, poll_count)
-                    return candidate
+                    logger.debug("OpenCode stable response received in %.2fs after %d polls", elapsed, poll_count)
+                    return stable_candidate
+            else:
+                stable_candidate = latest_new
+                stable_count = 1
 
             if poll_count % 10 == 0:
                 elapsed = time.time() - started_at
