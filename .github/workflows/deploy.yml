@@ -1,0 +1,50 @@
+name: Deploy OpenBridge to VM
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SSH_HOST: ${{ secrets.VM_HOST }}
+      SSH_USER: ${{ secrets.VM_USER }}
+      REPO_DIR: /home/DevCrewX/openbridge/src
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          install -m 600 -D /dev/null ~/.ssh/id_ed25519
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Pull latest code
+        run: >
+          ssh "$SSH_USER@$SSH_HOST"
+          "cd $REPO_DIR && git pull origin main"
+
+      - name: Restart bridge service
+        run: >
+          ssh "$SSH_USER@$SSH_HOST"
+          "systemctl --user restart openbridge.service"
+
+      - name: Verify deployment
+        run: |
+          sleep 5
+          ssh "$SSH_USER@$SSH_HOST" '
+            set -e
+            STATUS=$(systemctl --user is-active openbridge.service)
+            PID=$(systemctl --user show openbridge.service --property=MainPID | cut -d= -f2)
+
+            echo "Status:  $STATUS"
+            echo "PID:     $PID"
+
+            if [ "$STATUS" != "active" ]; then
+              echo "::error::Bridge service is $STATUS, not active"
+              exit 1
+            fi
+            echo "::notice::Deploy OK — PID $PID"
+          '
