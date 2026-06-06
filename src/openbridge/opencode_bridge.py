@@ -578,11 +578,15 @@ class OpenCodeBridge:
                 result = await asyncio.to_thread(self._run_prompt_via_api_sync, session_id, prompt)
             except Exception as exc:
                 error_text = str(exc)
-                if attempt == 0 and self._is_stale_session_error(error_text):
-                    logger.warning("Stale session detected for chat %s, clearing and retrying", chat_id)
-                    async with self._session_lock:
-                        self._chat_sessions.pop(chat_id, None)
-                    continue
+                if attempt == 0:
+                    if self._is_stale_session_error(error_text):
+                        logger.warning("Stale session detected for chat %s, clearing and retrying", chat_id)
+                        async with self._session_lock:
+                            self._chat_sessions.pop(chat_id, None)
+                        continue
+                    if self._is_transient_network_error(error_text):
+                        logger.warning("Transient network error for chat %s, retrying", chat_id)
+                        continue
                 self._stats["failed_requests"] += 1
                 self._stats["last_error"] = error_text
                 self._stats["last_result_kind"] = "api-error"
@@ -786,6 +790,9 @@ class OpenCodeBridge:
     @staticmethod
     def _is_stale_session_error(error_text: str) -> bool:
         return "404" in error_text or "session not found" in error_text.lower() or "session_id" in error_text.lower()
+
+    def _is_transient_network_error(self, error_text: str) -> bool:
+        return "timed out" in error_text.lower()
 
     def _is_error_result(self, text: str) -> bool:
         error_prefixes = (
